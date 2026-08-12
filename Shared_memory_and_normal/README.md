@@ -1,2 +1,0 @@
-Share_memory_and_normal ver
-CUDA
