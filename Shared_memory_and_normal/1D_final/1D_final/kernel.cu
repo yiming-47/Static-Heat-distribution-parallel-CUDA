@@ -1,148 +1,118 @@
-
 #include "cuda_runtime.h"
-#include <cuda.h>
-#include <stdlib.h>
-#include <stdio.h>
-#define blockx 8
-void Input(int*,int*);
-__global__ void shared_add( float *a,float *b,int N) {
-  unsigned int tx = threadIdx.x;
-  unsigned int ty = threadIdx.y; 
-  int i = blockIdx.x * blockDim.x + threadIdx.x;
-  int j = blockIdx.y * blockDim.y + threadIdx.y;
-  __shared__ float t1[blockx][blockx];
-  if ((i < N - 1) && (j < N - 1) && (i > 0) && (j > 0))
-  {
-        t1[tx][ty] = 0.25 * (a[(i-1) * N + j] 
-				+ a[(i+1) * N + j] 
-				+ a[i * N + (j-1)] 
-				+ a[i * N + (j+1)]);
-        __syncthreads();
+#include <algorithm>
+#include <cstdio>
+#include <cstdlib>
+#include <ctime>
 
-		b[i * N + j] = t1[tx][ty];
-  }
-}
-__global__ void add( float *orig,float *jaco,int N) {
-  int i = blockIdx.x * blockDim.x + threadIdx.x;
-  int j = blockIdx.y * blockDim.y + threadIdx.y;
-  if((i > 0) && (i < N-1) && (j > 0) && (j < N-1))
-  {
-		jaco[i * N + j] = 0.25 * (orig[(i-1) * N + j]
-					  +orig[(i+1) * N + j]
-					  +orig[i * N + (j-1)]
-					  +orig[i * N + (j+1)]);
-  }
-}
-__global__ void shared_transfer( float *a, float *b ,int N) {
-  const unsigned int bx = blockDim.x;
-  const unsigned int by = blockDim.y;
-  unsigned int tx = threadIdx.x;
-  unsigned int ty = threadIdx.y; 
-  int i = blockIdx.x * blockDim.x + threadIdx.x;
-  int j = blockIdx.y * blockDim.y + threadIdx.y;
-  unsigned int gx = gridDim.x;
-  unsigned int gy = gridDim.y;
-  __shared__ float t1[blockx][blockx];
- 
-   t1[tx][ty] = a[i * N + j];
-   __syncthreads();
-   b[i * N + j] = t1[tx][ty];
-   
-}
-__global__ void transfer( float *a, float *b ,int N) {
-  int i = blockIdx.x * blockDim.x + threadIdx.x;
-  int j = blockIdx.y * blockDim.y + threadIdx.y;
-  b[i * N + j] = a[i * N + j];
-}
-int main()
-{
-  int i,j,N,limit,iteration;
-  int fire_start,fire_end;
-  Input(&N,&limit);
-  float *orig,*jaco,*temp,elapsedTime;
-  float *dev_orig, *dev_jaco;
-  clock_t start_t,end_t;
-  double total_t;
-  int size = N * N * sizeof(float);
-  orig = (float *)malloc(sizeof(float) * (N * N));
-  jaco = (float *)malloc(sizeof(float) * (N * N));
-  cudaMalloc((void**)&dev_orig, size);
-  cudaMalloc((void**)&dev_jaco, size);
-//initial 
-  for (i = 0; i < N; i++) {
-    for (j = 0; j < N; j++) {
-    orig[i * N + j] = 0.0;
-    }
-  }
-  for (i = 0; i < N; i++) {
-    for (j = 0; j < N; j++) {
-      orig[i * N] = 20.0;
-      orig[i] = 20.0;
-      orig[i * N + (N - 1)] = 20.0;
-      orig[(N - 1) * N + i] = 20.0;
-    }
-  }
-  for (i = int(N / 2) - 2;i < int(N / 2) + 2;i++)
-  {
-	orig[int(i)] = 100.0;
-  }
-  memcpy((void *)jaco, (void *)orig, N*N *sizeof(float));
-  printf("Initial Temperatures: \n");
-  for (i = 0; i < N; i += N/10) {
-    for (j = 0; j < N; j += N/10) {
-      printf("%-.2f\t",orig[i * N + j]);
-      }
-    printf("\n");
-  }
-  printf("\n");
-  cudaEvent_t e_start, e_stop;
-  cudaEventCreate(&e_start);
-  cudaEventCreate(&e_stop);
-  cudaEventRecord(e_start, 0);
-  cudaEventRecord(e_stop, 0);  
-  
-  dim3 dimBlock(blockx,blockx);
-  dim3 dimGrid (N/dimBlock.x , N/dimBlock.y) ;
-  start_t = clock();
-  
-  cudaMemcpy( dev_orig, orig, size,cudaMemcpyHostToDevice );
-  cudaMemcpy( dev_jaco, jaco, size,cudaMemcpyHostToDevice );
-// it's fine
-  //cudaMallocManaged(&)
-  for(iteration = 0; iteration < limit;iteration++)
-  {
-    //shared_add<<<dimGrid,dimBlock>>>( dev_orig,dev_jaco, N);
-    //cudaDeviceSynchronize();
-	//shared_transfer<<<dimGrid,dimBlock>>>(dev_jaco,dev_orig,N);
-    //cudaDeviceSynchronize();
+constexpr int kBlockSize = 16;
 
-    add<<<dimGrid,dimBlock>>>( dev_orig,dev_jaco, N);
-    transfer<<<dimGrid,dimBlock>>>(dev_jaco,dev_orig,N);
-  }
-  cudaMemcpy( orig, dev_orig, size,cudaMemcpyDeviceToHost );
-  end_t = clock();
-  total_t = (double)(end_t - start_t) / CLOCKS_PER_SEC;
-  cudaEventSynchronize(e_stop);
-  cudaEventElapsedTime(&elapsedTime, e_start, e_stop);
-  printf("N = %d, execute time : %f clock_t: %f\n",N,elapsedTime,total_t);
-  printf("After firing: \n");
-  for (i = 0; i < N; i += N/10) {
-    for (j = 0; j < N; j += N/10) {
-      printf("%-.2f\t",orig[i * N + j]);
-      }
-    printf("\n");
-  }
-  free(orig);
-  free(jaco);
-  cudaFree( dev_orig );
-  cudaFree( dev_jaco );
-  system("PAUSE");
-  return 0;
-}
-void Input(int* N,int* limit) {
-  printf("plz input N ft\n");
-  scanf("%d", N);
-  printf("plz input iter num\n");
-  scanf("%d", limit);
+#define CUDA_CHECK(call) do { \
+  const cudaError_t error = (call); \
+  if (error != cudaSuccess) { \
+    std::fprintf(stderr, "%s:%d: %s\\n", __FILE__, __LINE__, cudaGetErrorString(error)); \
+    std::exit(EXIT_FAILURE); \
+  } \
+} while (0)
 
+__global__ void jacobi_step(const float* input, float* output, int n) {
+  // x advances through contiguous columns, so a warp performs coalesced accesses.
+  const int column = blockIdx.x * blockDim.x + threadIdx.x;
+  const int row = blockIdx.y * blockDim.y + threadIdx.y;
+  if (row >= n || column >= n) return;
+
+  const int index = row * n + column;
+  if (row == 0 || row == n - 1 || column == 0 || column == n - 1) {
+    output[index] = input[index];
+    return;
+  }
+
+  output[index] = 0.25f * (input[index - n] + input[index + n]
+                          + input[index - 1] + input[index + 1]);
+}
+
+static bool read_input(int* n, int* iterations) {
+  std::printf("Grid size N (>= 2): ");
+  if (std::scanf("%d", n) != 1 || *n < 2) return false;
+  std::printf("Iteration count (>= 0): ");
+  return std::scanf("%d", iterations) == 1 && *iterations >= 0;
+}
+
+int main() {
+  int n = 0;
+  int iterations = 0;
+  if (!read_input(&n, &iterations)) {
+    std::fprintf(stderr, "Invalid input.\\n");
+    return EXIT_FAILURE;
+  }
+
+  const size_t element_count = static_cast<size_t>(n) * static_cast<size_t>(n);
+  const size_t bytes = element_count * sizeof(float);
+  float* host_current = static_cast<float*>(std::malloc(bytes));
+  float* host_next = static_cast<float*>(std::malloc(bytes));
+  if (!host_current || !host_next) {
+    std::fprintf(stderr, "Host allocation failed.\\n");
+    std::free(host_current);
+    std::free(host_next);
+    return EXIT_FAILURE;
+  }
+
+  std::fill(host_current, host_current + element_count, 0.0f);
+  for (int i = 0; i < n; ++i) {
+    host_current[i * n] = 20.0f;
+    host_current[i * n + n - 1] = 20.0f;
+    host_current[i] = 20.0f;
+    host_current[(n - 1) * n + i] = 20.0f;
+  }
+  const int source_begin = std::max(0, n / 2 - 2);
+  const int source_end = std::min(n, n / 2 + 2);
+  for (int column = source_begin; column < source_end; ++column) host_current[column] = 100.0f;
+  std::copy(host_current, host_current + element_count, host_next);
+
+  float* device_current = nullptr;
+  float* device_next = nullptr;
+  CUDA_CHECK(cudaMalloc(&device_current, bytes));
+  CUDA_CHECK(cudaMalloc(&device_next, bytes));
+  CUDA_CHECK(cudaMemcpy(device_current, host_current, bytes, cudaMemcpyHostToDevice));
+  CUDA_CHECK(cudaMemcpy(device_next, host_next, bytes, cudaMemcpyHostToDevice));
+
+  const dim3 block(kBlockSize, kBlockSize);
+  const dim3 grid((n + block.x - 1) / block.x, (n + block.y - 1) / block.y);
+  cudaEvent_t start_event, stop_event;
+  CUDA_CHECK(cudaEventCreate(&start_event));
+  CUDA_CHECK(cudaEventCreate(&stop_event));
+
+  const clock_t cpu_start = std::clock();
+  CUDA_CHECK(cudaEventRecord(start_event));
+  for (int iteration = 0; iteration < iterations; ++iteration) {
+    jacobi_step<<<grid, block>>>(device_current, device_next, n);
+    CUDA_CHECK(cudaGetLastError());
+    float* swap = device_current;
+    device_current = device_next;
+    device_next = swap;
+  }
+  CUDA_CHECK(cudaEventRecord(stop_event));
+  CUDA_CHECK(cudaEventSynchronize(stop_event));
+  const clock_t cpu_stop = std::clock();
+
+  float elapsed_ms = 0.0f;
+  CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, start_event, stop_event));
+  CUDA_CHECK(cudaMemcpy(host_current, device_current, bytes, cudaMemcpyDeviceToHost));
+  std::printf("N = %d, GPU time: %.3f ms, CPU wall-clock: %.3f s\\n", n, elapsed_ms,
+              static_cast<double>(cpu_stop - cpu_start) / CLOCKS_PER_SEC);
+
+  const int sample_step = std::max(1, n / 10);
+  std::printf("After firing:\\n");
+  for (int row = 0; row < n; row += sample_step) {
+    for (int column = 0; column < n; column += sample_step)
+      std::printf("%.2f\\t", host_current[row * n + column]);
+    std::printf("\\n");
+  }
+
+  CUDA_CHECK(cudaEventDestroy(start_event));
+  CUDA_CHECK(cudaEventDestroy(stop_event));
+  CUDA_CHECK(cudaFree(device_current));
+  CUDA_CHECK(cudaFree(device_next));
+  std::free(host_current);
+  std::free(host_next);
+  return EXIT_SUCCESS;
 }

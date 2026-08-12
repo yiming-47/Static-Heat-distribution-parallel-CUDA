@@ -1,0 +1,15 @@
+# Visual Studio user and build output
+.vs/
+*.suo
+*.sdf
+*.ilk
+*.pdb
+*.lib
+*.exp
+*.exe
+*.obj
+*.cache
+*.deps
+*.tlog
+Debug/
+Release/

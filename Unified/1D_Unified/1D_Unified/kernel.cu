@@ -1,103 +1,97 @@
 #include "cuda_runtime.h"
-#include <cuda.h>
-#include <stdlib.h>
-#include <stdio.h>
-#define blockx 8
-void Input(int*,int*);
-__global__ void add(int N, float *orig,float *jaco) {
-  int i = blockIdx.x * blockDim.x + threadIdx.x;
-  int j = blockIdx.y * blockDim.y + threadIdx.y;
-  if((i > 0) && (i < N-1) && (j > 0) && (j < N-1))
-  {
-		jaco[i * N + j] = 0.25 * (orig[(i-1) * N + j]
-					  +orig[(i+1) * N + j]
-					  +orig[i * N + (j-1)]
-					  +orig[i * N + (j+1)]);
-  }
-}
-__global__ void transfer(int N, float *a, float *b) {
-  int i = blockIdx.x * blockDim.x + threadIdx.x;
-  int j = blockIdx.y * blockDim.y + threadIdx.y;
-  b[i * N + j] = a[i * N + j];
-}
-int main()
-{
-  int i,j,N,limit,iteration;
-  int fire_start,fire_end;
-  Input(&N,&limit);
-  float *orig,*jaco,*temp,elapsedTime;
-  float *dev_orig, *dev_jaco;
-  clock_t start_t,end_t;
-  double total_t;
-  int size = N * N * sizeof(float);
-  orig = (float *)malloc(sizeof(float) * (N * N));
-  jaco = (float *)malloc(sizeof(float) * (N * N));
-  cudaMallocManaged(&orig, N*N*sizeof(float));
-  cudaMallocManaged(&jaco, N*N*sizeof(float));
-//initial 
-  for (i = 0; i < N; i++) {
-    for (j = 0; j < N; j++) {
-    orig[i * N + j] = 0.0;
-    }
-  }
-  for (i = 0; i < N; i++) {
-    for (j = 0; j < N; j++) {
-      orig[i * N] = 20.0;
-      orig[i] = 20.0;
-      orig[i * N + (N - 1)] = 20.0;
-      orig[(N - 1) * N + i] = 20.0;
-    }
-  }
-  for (i = int(N / 2) - 2;i < int(N / 2) + 2;i++)
-  {
-	orig[int(i)] = 100.0;
-  }
-  memcpy((void *)jaco, (void *)orig, N*N *sizeof(float));
-  printf("Initial Temperatures: \n");
-  for (i = 0; i < N; i += N/10) {
-    for (j = 0; j < N; j += N/10) {
-      printf("%-.2f\t",orig[i * N + j]);
-      }
-    printf("\n");
-  }
-  printf("\n");
-  cudaEvent_t e_start, e_stop;
-  cudaEventCreate(&e_start);
-  cudaEventCreate(&e_stop);
-  cudaEventRecord(e_start, 0);
-  cudaEventRecord(e_stop, 0);  
-  
-  dim3 dimBlock(blockx,blockx);
-  dim3 dimGrid (N/dimBlock.x , N/dimBlock.y) ;
-  start_t = clock();
-// it's fine
-  for(iteration = 0; iteration < limit;iteration++)
-  {
-    add<<<dimGrid,dimBlock>>>( N,orig,jaco);
-    transfer<<<dimGrid,dimBlock>>>(N, jaco,orig);
-  }
-  cudaDeviceSynchronize();
-  end_t = clock();
-  total_t = (double)(end_t - start_t) / CLOCKS_PER_SEC;
-  cudaEventSynchronize(e_stop);
-  cudaEventElapsedTime(&elapsedTime, e_start, e_stop);
-  printf("N = %d, execute time : %f clock_t: %f\n",N,elapsedTime,total_t);
-  printf("After firing: \n");
-  for (i = 0; i < N; i += N/10) {
-    for (j = 0; j < N; j += N/10) {
-      printf("%-.2f\t",orig[i * N + j]);
-      }
-    printf("\n");
-  }
-  cudaFree(orig);
-  cudaFree(jaco);
-  system("PAUSE");
-  return 0;
-}
-void Input(int* N,int* limit) {
-  printf("plz input N ft\n");
-  scanf("%d", N);
-  printf("plz input iter num\n");
-  scanf("%d", limit);
+#include <algorithm>
+#include <cstdio>
+#include <cstdlib>
+#include <ctime>
 
+constexpr int kBlockSize = 16;
+
+#define CUDA_CHECK(call) do { \
+  const cudaError_t error = (call); \
+  if (error != cudaSuccess) { \
+    std::fprintf(stderr, "%s:%d: %s\\n", __FILE__, __LINE__, cudaGetErrorString(error)); \
+    std::exit(EXIT_FAILURE); \
+  } \
+} while (0)
+
+__global__ void jacobi_step(const float* input, float* output, int n) {
+  const int column = blockIdx.x * blockDim.x + threadIdx.x;
+  const int row = blockIdx.y * blockDim.y + threadIdx.y;
+  if (row >= n || column >= n) return;
+
+  const int index = row * n + column;
+  output[index] = (row == 0 || row == n - 1 || column == 0 || column == n - 1)
+      ? input[index]
+      : 0.25f * (input[index - n] + input[index + n] + input[index - 1] + input[index + 1]);
+}
+
+static bool read_input(int* n, int* iterations) {
+  std::printf("Grid size N (>= 2): ");
+  if (std::scanf("%d", n) != 1 || *n < 2) return false;
+  std::printf("Iteration count (>= 0): ");
+  return std::scanf("%d", iterations) == 1 && *iterations >= 0;
+}
+
+int main() {
+  int n = 0, iterations = 0;
+  if (!read_input(&n, &iterations)) {
+    std::fprintf(stderr, "Invalid input.\\n");
+    return EXIT_FAILURE;
+  }
+
+  const size_t element_count = static_cast<size_t>(n) * static_cast<size_t>(n);
+  const size_t bytes = element_count * sizeof(float);
+  float* current = nullptr;
+  float* next = nullptr;
+  CUDA_CHECK(cudaMallocManaged(&current, bytes));
+  CUDA_CHECK(cudaMallocManaged(&next, bytes));
+
+  std::fill(current, current + element_count, 0.0f);
+  for (int i = 0; i < n; ++i) {
+    current[i * n] = 20.0f;
+    current[i * n + n - 1] = 20.0f;
+    current[i] = 20.0f;
+    current[(n - 1) * n + i] = 20.0f;
+  }
+  for (int column = std::max(0, n / 2 - 2); column < std::min(n, n / 2 + 2); ++column)
+    current[column] = 100.0f;
+  std::copy(current, current + element_count, next);
+
+  const dim3 block(kBlockSize, kBlockSize);
+  const dim3 grid((n + block.x - 1) / block.x, (n + block.y - 1) / block.y);
+  cudaEvent_t start_event, stop_event;
+  CUDA_CHECK(cudaEventCreate(&start_event));
+  CUDA_CHECK(cudaEventCreate(&stop_event));
+
+  const clock_t cpu_start = std::clock();
+  CUDA_CHECK(cudaEventRecord(start_event));
+  for (int iteration = 0; iteration < iterations; ++iteration) {
+    jacobi_step<<<grid, block>>>(current, next, n);
+    CUDA_CHECK(cudaGetLastError());
+    float* swap = current;
+    current = next;
+    next = swap;
+  }
+  CUDA_CHECK(cudaEventRecord(stop_event));
+  CUDA_CHECK(cudaEventSynchronize(stop_event));
+  const clock_t cpu_stop = std::clock();
+
+  float elapsed_ms = 0.0f;
+  CUDA_CHECK(cudaEventElapsedTime(&elapsed_ms, start_event, stop_event));
+  std::printf("N = %d, GPU time: %.3f ms, CPU wall-clock: %.3f s\\n", n, elapsed_ms,
+              static_cast<double>(cpu_stop - cpu_start) / CLOCKS_PER_SEC);
+
+  const int sample_step = std::max(1, n / 10);
+  std::printf("After firing:\\n");
+  for (int row = 0; row < n; row += sample_step) {
+    for (int column = 0; column < n; column += sample_step)
+      std::printf("%.2f\\t", current[row * n + column]);
+    std::printf("\\n");
+  }
+
+  CUDA_CHECK(cudaEventDestroy(start_event));
+  CUDA_CHECK(cudaEventDestroy(stop_event));
+  CUDA_CHECK(cudaFree(current));
+  CUDA_CHECK(cudaFree(next));
+  return EXIT_SUCCESS;
 }
